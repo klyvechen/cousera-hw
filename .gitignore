@@ -1,0 +1,4 @@
+*.log
+cloud_computing/mp1/.history
+*.o
+*.asm
