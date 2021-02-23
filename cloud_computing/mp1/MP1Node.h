@@ -31,6 +31,7 @@
 enum MsgTypes{
     JOINREQ,
     JOINREP,
+	GOSSIP,
     DUMMYLASTMSGTYPE
 };
 
@@ -39,9 +40,30 @@ enum MsgTypes{
  *
  * DESCRIPTION: Header and content of a message
  */
+typedef struct NodeStat {
+	char addr[6];
+	long heartbeat;
+}NodeStat;
+
+typedef struct GossipCnt {
+	int nodeNum;
+	NodeStat nodeStats[];
+}GossipCnt;
+
+typedef struct JoinReqCnt {
+	long heartbeat;
+	char addr[6];
+}JoinReqCnt;
+
+typedef struct JoinRepCnt {
+	bool success;
+}JoinRepCnt;
+
+
 typedef struct MessageHdr {
 	enum MsgTypes msgType;
 }MessageHdr;
+
 
 /**
  * CLASS NAME: MP1Node
@@ -55,6 +77,8 @@ private:
 	Params *par;
 	Member *memberNode;
 	char NULLADDR[6];
+	void addToGroup(char addr[6], long heartbeat);
+	void notifyJoined(Address* joinRepAddr);
 
 public:
 	MP1Node(Member *, Params *, EmulNet *, Log *, Address *);

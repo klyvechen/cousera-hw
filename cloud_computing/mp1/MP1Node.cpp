@@ -104,7 +104,7 @@ int MP1Node::initThisNode(Address *joinaddr) {
 	memberNode->inGroup = false;
     // node is up!
 	memberNode->nnb = 0;
-	memberNode->heartbeat = 0;
+	memberNode->heartbeat = 8;
 	memberNode->pingCounter = TFAIL;
 	memberNode->timeOutCounter = -1;
     initMemberListTable(memberNode);
@@ -112,13 +112,90 @@ int MP1Node::initThisNode(Address *joinaddr) {
     return 0;
 }
 
+Address* toAddress(char addr[6]) {
+    string a;
+    for (int i =0; i < (sizeof(addr)/sizeof(*addr)); i++) {
+        a += (to_string((int)addr[i]) + ":");
+    }
+    a.pop_back();
+    return new Address(a);
+}
+
+Address* toAddress(int id, short port) {
+    char addr[6];
+    memcpy(&addr[0], &id, sizeof(int));
+    memcpy(&addr[4], &port, sizeof(short));
+    string a;
+    for (int i =0; i < (sizeof(addr)/sizeof(*addr)); i++) {
+        a += (to_string((int)addr[i]) + ":");
+    }
+    a.pop_back();
+    return new Address(a);
+}
+
+MessageHdr* replaceMeMessage(MsgTypes type, char* nodeAddr,long heartbeat) {
+
+}
+
+MessageHdr* createJoinqMessage(MsgTypes type, char* nodeAddr,long heartbeat) {
+	MessageHdr *msg;
+    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinReqCnt) + 1;
+    msg = (MessageHdr *) malloc(msgsize * sizeof(char));
+    msg->msgType = JOINREQ;
+    // create JOINREQ message: format of data is {struct Address myaddr}
+    JoinReqCnt *joinReq = (JoinReqCnt *) (msg+1);
+    memcpy(joinReq->addr, nodeAddr, sizeof(char[6]));
+    memcpy(&joinReq->heartbeat, &heartbeat, sizeof(long));
+
+    return msg;
+}
+
+MessageHdr* createJoinpMessage(MsgTypes type, char* nodeAddr) {
+	MessageHdr *msg;
+    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinRepCnt) + 1;
+    msg = (MessageHdr *) malloc(msgsize * sizeof(char));
+    msg->msgType = JOINREP;
+    // create JOINREQ message: format of data is {struct Address myaddr}
+    JoinRepCnt *joinRep = (JoinRepCnt *) (msg+1);
+    bool success = true;
+    memcpy(&joinRep->success, &success, sizeof(true));
+    return msg;
+}
+
+#define handleJoinMessage(type_t) ({ \
+    size_t msgsize = sizeof(MessageHdr) + sizeof(type_t) + 1; \
+    msg = (MessageHdr *) realloc(msg, msgsize * sizeof(char)); \
+    memcpy((char*)(msg+1), data+sizeof(MessageHdr), msgsize); \
+    })
+
+MessageHdr* receiveMessage(char *data) {
+    MessageHdr *msg;
+    size_t hdrsize = sizeof(MessageHdr);
+    msg = (MessageHdr *) malloc(hdrsize * sizeof(char));
+    memcpy(msg, data, sizeof(MessageHdr));
+    if (msg->msgType == JOINREQ) {
+        handleJoinMessage(JoinReqCnt);
+    } else if (msg->msgType == JOINREP) {
+        handleJoinMessage(JoinRepCnt);
+    } else if (msg->msgType == GOSSIP) {
+        long nodeNum = (long)malloc(sizeof(long));
+        memcpy(&nodeNum, data + sizeof(MessageHdr), sizeof(long));
+        size_t hdrsize = sizeof(MessageHdr);
+        size_t cntsize = sizeof(long) + sizeof(NodeStat) * nodeNum + 1;
+        msg = (MessageHdr *) realloc(msg, (hdrsize + cntsize) * sizeof(char));
+        memcpy((char *)(msg+1), data + sizeof(MessageHdr), cntsize);
+    }
+    
+    return msg;
+}
+
+
 /**
  * FUNCTION NAME: introduceSelfToGroup
  *
  * DESCRIPTION: Join the distributed system
  */
 int MP1Node::introduceSelfToGroup(Address *joinaddr) {
-	MessageHdr *msg;
 #ifdef DEBUGLOG
     static char s[1024];
 #endif
@@ -131,21 +208,15 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
         memberNode->inGroup = true;
     }
     else {
-        size_t msgsize = sizeof(MessageHdr) + sizeof(joinaddr->addr) + sizeof(long) + 1;
-        msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-
-        // create JOINREQ message: format of data is {struct Address myaddr}
-        msg->msgType = JOINREQ;
-        memcpy((char *)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
-        memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
+        MessageHdr *msg = createJoinqMessage(JOINREQ, memberNode->addr.addr, memberNode->heartbeat);
 
 #ifdef DEBUGLOG
         sprintf(s, "Trying to join...");
         log->LOG(&memberNode->addr, s);
 #endif
-
+        size_t size = sizeof(MessageHdr) + sizeof(JoinReqCnt) + 1; 
         // send JOINREQ message to introducer member
-        emulNet->ENsend(&memberNode->addr, joinaddr, (char *)msg, msgsize);
+        emulNet->ENsend(&memberNode->addr, joinaddr, (char *)msg, size);
 
         free(msg);
     }
@@ -209,6 +280,16 @@ void MP1Node::checkMessages() {
     return;
 }
 
+void MP1Node::addToGroup(char addr[6], long heartbeat) {
+    MemberListEntry newMember = MemberListEntry(*addr, addr[4], heartbeat, time(0));
+    memberNode->memberList.push_back(newMember);
+}
+
+void MP1Node::notifyJoined(Address* joinRepAddr) {
+    MessageHdr* msg = createJoinpMessage(JOINREP, joinRepAddr->addr);
+    emulNet->ENsend(&memberNode->addr, joinRepAddr, (char *)msg, sizeof(msg));
+}
+
 /**
  * FUNCTION NAME: recvCallBack
  *
@@ -218,6 +299,25 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 	/*
 	 * Your code goes here
 	 */
+    MessageHdr *msg = receiveMessage(data);
+
+    Address joinaddr = getJoinAddress();
+    if (msg->msgType == JOINREQ) {
+        JoinReqCnt *joinReq = (JoinReqCnt *) (msg + 1);
+        addToGroup(joinReq->addr, joinReq->heartbeat);
+        // string str(joinReq->addr);s
+        Address *address = toAddress(joinReq->addr);
+        notifyJoined(toAddress(joinReq->addr));
+        cout <<"The join req is from " << toAddress(joinReq->addr)->getAddress()
+        << ", heartbeat: " << dec << joinReq->heartbeat << endl;
+    } else if (msg->msgType == JOINREP) {
+        JoinRepCnt *joinRep = (JoinRepCnt *) (msg + 1);
+        memberNode->inGroup = joinRep->success;
+    } else if (msg->msgType == GOSSIP) {
+        GossipCnt *gossip = (GossipCnt *) (msg + 1);
+        int nodeNum = gossip->nodeNum;
+    }
+
 }
 
 /**
@@ -232,6 +332,13 @@ void MP1Node::nodeLoopOps() {
 	/*
 	 * Your code goes here
 	 */
+    cout << "member in group: "<< memberNode->inGroup << ", address is " << memberNode->addr.getAddress() << 
+    " size of member: " << memberNode->memberList.size() << endl;
+    std::vector<MemberListEntry> memberList = memberNode->memberList;
+    for (std::vector<MemberListEntry>::iterator it = memberList.begin() ; it != memberList.end(); ++it) {
+        MemberListEntry m = *it;
+        
+    }
 
     return;
 }
