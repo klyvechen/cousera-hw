@@ -124,7 +124,7 @@ Address* toAddress(char addr[6]) {
 Address* toAddress(int id, short port) {
     char addr[6];
     memcpy(&addr[0], &id, sizeof(int));
-    memcpy(&addr[4], &port, sizeof(short));
+    memcpy(&addr[4], &port, sizeof(int));
     string a;
     for (int i =0; i < (sizeof(addr)/sizeof(*addr)); i++) {
         a += (to_string((int)addr[i]) + ":");
@@ -133,59 +133,124 @@ Address* toAddress(int id, short port) {
     return new Address(a);
 }
 
-MessageHdr* replaceMeMessage(MsgTypes type, char* nodeAddr,long heartbeat) {
-
+int getId(char addr[6]) {
+    return (int) addr[0];
 }
 
-MessageHdr* createJoinqMessage(MsgTypes type, char* nodeAddr,long heartbeat) {
-	MessageHdr *msg;
-    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinReqCnt) + 1;
+void printNodeStatus(Member* memberNode, int id, int port, string info);
+
+/**
+ * create Message Zone:
+ * create different type of message.
+ **/
+MessageHdr* createMessageHeader(MsgTypes type, char fromaddr[6], size_t msgsize) {
+    MessageHdr *msg;
     msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-    msg->msgType = JOINREQ;
-    // create JOINREQ message: format of data is {struct Address myaddr}
+    msg->msgType = type;
+    memcpy(&msg->msgsize, &msgsize, sizeof(size_t));
+    memcpy(msg->fromaddr, fromaddr, sizeof(char[6]));
+    return msg;
+}
+
+MessageHdr* createJoinqMessage(MsgTypes type, char nodeAddr[6],long heartbeat) {
+    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinReqCnt) + 4;
+	MessageHdr *msg = createMessageHeader(JOINREQ, nodeAddr, msgsize);
+
     JoinReqCnt *joinReq = (JoinReqCnt *) (msg+1);
     memcpy(joinReq->addr, nodeAddr, sizeof(char[6]));
     memcpy(&joinReq->heartbeat, &heartbeat, sizeof(long));
-
     return msg;
 }
 
-MessageHdr* createJoinpMessage(MsgTypes type, char* nodeAddr) {
-	MessageHdr *msg;
-    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinRepCnt) + 1;
-    msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-    msg->msgType = JOINREP;
-    // create JOINREQ message: format of data is {struct Address myaddr}
-    JoinRepCnt *joinRep = (JoinRepCnt *) (msg+1);
+void buildPeer(PeerInfo* peer, char a[6], long heartbeat) {
+    memcpy(&peer->heartbeat, &heartbeat, sizeof(long));
+    memcpy(peer->addr, a, sizeof(char[6]));
+}
+
+MessageHdr* createJoinpMessage(Member* nodeInfo) {
     bool success = true;
+    int peerNum =  nodeInfo->memberList.size()-1;
+    size_t msgsize = sizeof(MessageHdr) + sizeof(JoinRepCnt) + sizeof(PeerInfo) * (peerNum) + 14;
+    
+	MessageHdr *msg = createMessageHeader(JOINREP, nodeInfo->addr.addr, msgsize);
+
+    JoinRepCnt *joinRep = (JoinRepCnt *) (msg+1);
     memcpy(&joinRep->success, &success, sizeof(true));
+    memcpy(&joinRep->rcmdNum, &peerNum, sizeof(int));
+    PeerInfo *peer = (PeerInfo*) joinRep+1;
+    for (int i = 0; i < peerNum ; i++) {
+        MemberListEntry entry = nodeInfo->memberList[i];
+        Address* addr = toAddress(entry.id, entry.port);
+        // buildPeer(peer, addr->addr, entry.heartbeat);
+        memcpy(&peer->heartbeat, &entry.heartbeat, sizeof(long));
+        memcpy(peer->addr, addr->addr, sizeof(char[6]));
+        peer++;
+        delete addr;
+    }
     return msg;
 }
 
-#define handleJoinMessage(type_t) ({ \
-    size_t msgsize = sizeof(MessageHdr) + sizeof(type_t) + 1; \
-    msg = (MessageHdr *) realloc(msg, msgsize * sizeof(char)); \
-    memcpy((char*)(msg+1), data+sizeof(MessageHdr), msgsize); \
-    })
+MessageHdr* createMkPrRequestMessage(Member* nodeInfo) {
+    // create MKPRREQ message:
+    size_t msgsize = sizeof(MessageHdr) + sizeof(MkPrReqCnt) + sizeof(PeerInfo) + sizeof(long) + sizeof(char[6]) + 12;
+	MessageHdr *msg = createMessageHeader(MKPRREQ, nodeInfo->addr.addr, msgsize);
 
-MessageHdr* receiveMessage(char *data) {
+    // attach peer info after content
+    MkPrReqCnt *mkPrReq = (MkPrReqCnt *) (msg+1);
+    mkPrReq->dummy = true;
+    PeerInfo *peer = (PeerInfo*) mkPrReq+1;
+    // buildPeer(peer, nodeInfo->addr.addr, nodeInfo->heartbeat);
+    memcpy(&peer->heartbeat, &nodeInfo->heartbeat, sizeof(long));
+    memcpy(peer->addr, &nodeInfo->addr, sizeof(char[6]));
+    return msg;
+}
+
+MessageHdr* createMkPrResponseMessage(Member* nodeInfo) {
+    // create MKPRREP message:
+    size_t msgsize = sizeof(MessageHdr) + sizeof(MkPrRepCnt) + sizeof(PeerInfo) + sizeof(long) + sizeof(char[6]) + 12;
+	MessageHdr *msg = createMessageHeader(MKPRREP, nodeInfo->addr.addr, msgsize);
+
+    MkPrRepCnt *mkPrRep = (MkPrRepCnt *) (msg+1);
+    mkPrRep->success = true;
+    // attach peer info after content
+    PeerInfo *peer = (PeerInfo*) mkPrRep+1;
+    buildPeer(peer, nodeInfo->addr.addr, nodeInfo->heartbeat);
+    return msg;
+}
+
+MessageHdr* createRlPrRequestMessage(Member* nodeInfo, char applyaddr[6]) {
+    // create RLPRREQ message:
+    size_t msgsize = sizeof(MessageHdr) + sizeof(RlPrReqCnt) + sizeof(long) + sizeof(char[8]) * 2;
+	MessageHdr *msg = createMessageHeader(RLPRREQ, nodeInfo->addr.addr, msgsize);
+
+    RlPrReqCnt *rlPrReq = (RlPrReqCnt *) (msg+1);
+    memcpy(rlPrReq->fromaddr, nodeInfo->addr.addr, sizeof(char[6]));
+    memcpy(rlPrReq->toaddr, applyaddr, sizeof(char[6]));
+    memcpy(&rlPrReq->heartbeat, &nodeInfo->heartbeat, sizeof(long));
+    return msg;
+}
+
+MessageHdr* createRlPrResponseMessage(Member* nodeInfo, char toaddr[6], long heartbeat) {
+    // create RLPRREQ message:
+    size_t msgsize = sizeof(MessageHdr) + sizeof(RlPrRepCnt) + sizeof(bool) + sizeof(char[6]) + sizeof(long) + 12;
+	MessageHdr *msg = createMessageHeader(RLPRREP, nodeInfo->addr.addr, msgsize);
+
+    RlPrRepCnt *rlPrReq = (RlPrRepCnt *) (msg+1);
+    bool success = true;
+    memcpy(&rlPrReq->success, &success, sizeof(bool));
+    memcpy(&rlPrReq->heartbeat, &nodeInfo->heartbeat, sizeof(long));
+    memcpy(rlPrReq->toaddr, toaddr, sizeof(char[6]));
+    return msg;
+}
+
+MessageHdr* receiveMessage(void *env, char *data) {
     MessageHdr *msg;
     size_t hdrsize = sizeof(MessageHdr);
-    msg = (MessageHdr *) malloc(hdrsize * sizeof(char));
-    memcpy(msg, data, sizeof(MessageHdr));
-    if (msg->msgType == JOINREQ) {
-        handleJoinMessage(JoinReqCnt);
-    } else if (msg->msgType == JOINREP) {
-        handleJoinMessage(JoinRepCnt);
-    } else if (msg->msgType == GOSSIP) {
-        long nodeNum = (long)malloc(sizeof(long));
-        memcpy(&nodeNum, data + sizeof(MessageHdr), sizeof(long));
-        size_t hdrsize = sizeof(MessageHdr);
-        size_t cntsize = sizeof(long) + sizeof(NodeStat) * nodeNum + 1;
-        msg = (MessageHdr *) realloc(msg, (hdrsize + cntsize) * sizeof(char));
-        memcpy((char *)(msg+1), data + sizeof(MessageHdr), cntsize);
-    }
-    
+    msg = (MessageHdr *) malloc(hdrsize);
+    memcpy(msg, data, hdrsize);
+    size_t msgsize = msg->msgsize; 
+    msg = (MessageHdr *) realloc(msg, msgsize); 
+    memcpy((char*)(msg+1), data + hdrsize, msgsize - hdrsize); 
     return msg;
 }
 
@@ -280,44 +345,187 @@ void MP1Node::checkMessages() {
     return;
 }
 
-void MP1Node::addToGroup(char addr[6], long heartbeat) {
+void addPeer(Member* env, char addr[6], long heartbeat) {
     MemberListEntry newMember = MemberListEntry(*addr, addr[4], heartbeat, time(0));
-    memberNode->memberList.push_back(newMember);
+    env->memberList.push_back(newMember);
 }
 
-void MP1Node::notifyJoined(Address* joinRepAddr) {
-    MessageHdr* msg = createJoinpMessage(JOINREP, joinRepAddr->addr);
-    emulNet->ENsend(&memberNode->addr, joinRepAddr, (char *)msg, sizeof(msg));
+void removePeer(Member* member, char addr[6]) {
+    cout << "node " << member->addr.getAddress() << " is removing node" << endl;
+    if (member->memberList.size() == 0) {
+        return;
+    }
+    cout << "-3" << endl;
+    int toRemove = 0;
+    for (int i = 0; i < member->memberList.size(); i++) {
+        cout << i << endl;
+        int id = getId(addr);
+        if (member->memberList[i].id == id) {
+            toRemove = i;
+            break;
+        }
+    }
+    cout << "-1" << endl;
+    member->memberList.erase(member->memberList.begin() + toRemove);
+    cout << "-2" << endl;
+}
+
+void doReplacePeer(Member* nodeInfo, EmulNet *emulNet, char applyAddr[6]) {
+    MemberListEntry entry = nodeInfo->memberList.back();
+    nodeInfo->memberList.pop_back();
+    MessageHdr* msg = createRlPrRequestMessage(nodeInfo, applyAddr);
+
+    Address* toaddr = toAddress(entry.id, entry.port);
+    emulNet->ENsend(&nodeInfo->addr, toaddr, (char *)msg, msg->msgsize);
+    delete toaddr;
+}
+
+void checkMakePeerStatus(Member* nodeInfo, EmulNet *emulNet, Address* procNode) {
+    //  int peerNum =  nodeInfo->memberList.size();
+    // if (peerNum == MAX_PEERS) {
+    //     MemberListEntry entry = nodeInfo->memberList.back();
+    //     nodeInfo->memberList.pop_back();
+    //     MessageHdr* msg = createRlPrRequestMessage(nodeInfo, procNode);
+    //     Address* toaddr = toAddress(entry.id, entry.port);
+    //     emulNet->ENsend(&nodeInfo->addr, toaddr, (char *)msg, msg->msgsize);
+    //     delete toaddr;
+    //     cout << "the memberlist size is " << nodeInfo->memberList.size() << endl;
+    // }
+}
+
+void doJoinResponse(Member* nodeInfo, EmulNet *emulNet, char addr[6], long heartbeat) {
+    Address* toaddr = toAddress(addr);
+    addPeer(nodeInfo, addr, heartbeat);
+    MessageHdr* sendMsg = createJoinpMessage(nodeInfo);
+    emulNet->ENsend(&nodeInfo->addr, toaddr, (char *) sendMsg, sendMsg->msgsize);
+    cout <<"Node " << toaddr->getAddress() << " want to join the group, heartbeat: " << dec << heartbeat << endl;
+    //printNodeStatus(nodeInfo, 1, 0, " handle join request finished ");
+    free(sendMsg);
+    delete toaddr;
+}
+
+void handleJoinReq(Member* nodeInfo, EmulNet *emulNet, JoinReqCnt *joinReq) {
+    Address* toaddr = toAddress(joinReq->addr);
+    Address* hostaddr = &nodeInfo->addr;
+    //printNodeStatus(nodeInfo, 1, 0, " handle join request start ");
+    if (nodeInfo->memberList.size() == MAX_PEERS) {
+        cout << "Host " << hostaddr->getAddress() << " reach max peer, do replace peer" << endl; 
+        doReplacePeer(nodeInfo, emulNet, joinReq->addr);
+    } else {
+        doJoinResponse(nodeInfo, emulNet, joinReq->addr, joinReq->heartbeat);
+    }
+    delete toaddr;
+}
+
+void handleJoinRep(Member* nodeInfo, EmulNet *emulNet, JoinRepCnt *joinRep) {
+    //printNodeStatus(nodeInfo, 1, 0, " handle join response start ");
+    bool success = joinRep->success;
+    cout << "start join response" << endl;
+    if (success) {
+        MessageHdr* sendMsg = createMkPrRequestMessage(nodeInfo);
+        PeerInfo* peer = (PeerInfo*) joinRep+1;
+        for (int i = 0; i < joinRep->rcmdNum; i++) {
+            Address* toaddr = toAddress(peer->addr);
+            cout << "Make peer from "<< nodeInfo->addr.getAddress() << " to " << toaddr->getAddress() << ", the heartbeat is " << peer->heartbeat << endl;
+            emulNet->ENsend(&nodeInfo->addr, toaddr, (char *)sendMsg, sendMsg->msgsize);
+            peer++;  
+            delete toaddr;
+        } 
+        free(sendMsg);
+    }
+    cout << "finish join response" << endl;
+    //printNodeStatus(nodeInfo, 1, 0, " handle join response finished ");
+}
+
+void handleReplacePeerReq(Member* nodeInfo, EmulNet *emulNet, RlPrReqCnt *rlprReqCnt, char fromaddr[6]) {
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer request start ");
+    MessageHdr* msg = createRlPrResponseMessage(nodeInfo, rlprReqCnt->toaddr, rlprReqCnt->heartbeat);
+    removePeer(nodeInfo, rlprReqCnt->toaddr);
+
+    Address* fromaddrBig = toAddress(fromaddr);
+    Address* toaddrBig = toAddress(((RlPrRepCnt*)(msg+1))->toaddr);
+    cout << "To address is " << toaddrBig->getAddress() <<endl;
+    cout << "send the rl peer response to " << fromaddrBig->getAddress() << endl;
+    cout << "toaddrBig # " << (char*) (((RlPrRepCnt*)(msg+1))->toaddr) << endl;
+
+    emulNet->ENsend(&nodeInfo->addr, fromaddrBig, (char *)msg, msg->msgsize);
+    cout << "send the rl peer response end" << endl;
+    delete fromaddrBig;
+    delete toaddrBig;
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer request finished ");
+}
+
+void handleReplacePeerRep(Member* nodeInfo, EmulNet *emulNet, RlPrRepCnt *rlprRepCnt) {
+    cout << "handleReplacePeerRep" << endl;
+    Address* toAddr = toAddress(rlprRepCnt->toaddr);
+    cout << "To address " << toAddr->getAddress() << endl;
+    cout << "success " << rlprRepCnt->success << endl;
+    cout << "heartbeat " << rlprRepCnt->heartbeat << endl;
+    doJoinResponse(nodeInfo, emulNet, rlprRepCnt->toaddr, rlprRepCnt->heartbeat);
+    delete toAddr;
+}
+
+void handleMakePeerReq(Member* nodeInfo, EmulNet *emulNet, MkPrReqCnt *mkpeerReq, char fromaddr[6]) {
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer request start ");
+    PeerInfo* peer = (PeerInfo*) mkpeerReq + 1;
+    Address* toaddr = toAddress(peer->addr);
+    addPeer(nodeInfo, peer->addr, peer->heartbeat);
+    MessageHdr* sendMsg = createMkPrResponseMessage(nodeInfo);
+    emulNet->ENsend(&nodeInfo->addr, toaddr, (char *)sendMsg, sendMsg->msgsize);
+    delete toaddr;
+    free(sendMsg);
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer request finished ");
+}
+
+void handleMakePeerRep(Member* nodeInfo, MkPrRepCnt *mkpeerRep) {
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer response start");
+    PeerInfo* peer = (PeerInfo*) mkpeerRep + 1;
+    addPeer(nodeInfo, peer->addr, peer->heartbeat);
+    //printNodeStatus(nodeInfo, 1, 0, " handle make peer response finished");
 }
 
 /**
  * FUNCTION NAME: recvCallBack
  *
  * DESCRIPTION: Message handler for different message types
+ * JOINREQ the join group request, if the host reach the max peer staus, send RLPRREQ.
+ * JOINREP
+ * RLPRREQ
+ * RLPRREP
+ * MKPRREQ
+ * MKPRREP
  */
-bool MP1Node::recvCallBack(void *env, char *data, int size ) {
+bool MP1Node::recvCallBack(void *env, char *data, int size) {
 	/*
 	 * Your code goes here
 	 */
-    MessageHdr *msg = receiveMessage(data);
-
-    Address joinaddr = getJoinAddress();
+    MessageHdr *msg = receiveMessage(env, data);
     if (msg->msgType == JOINREQ) {
-        JoinReqCnt *joinReq = (JoinReqCnt *) (msg + 1);
-        addToGroup(joinReq->addr, joinReq->heartbeat);
-        // string str(joinReq->addr);s
-        Address *address = toAddress(joinReq->addr);
-        notifyJoined(toAddress(joinReq->addr));
-        cout <<"The join req is from " << toAddress(joinReq->addr)->getAddress()
-        << ", heartbeat: " << dec << joinReq->heartbeat << endl;
+        cout << "JOINREQ" << endl;
+        handleJoinReq((Member *) env, emulNet, (JoinReqCnt *) (msg + 1));
     } else if (msg->msgType == JOINREP) {
+        cout << "JOINREP" << endl;
         JoinRepCnt *joinRep = (JoinRepCnt *) (msg + 1);
+        handleJoinRep((Member *) env, emulNet, joinRep);
         memberNode->inGroup = joinRep->success;
+    } else if (msg->msgType == RLPRREQ) {
+        cout << "RLPRREQ" << endl;
+        handleReplacePeerReq((Member *) env, emulNet, (RlPrReqCnt *) (msg + 1), msg->fromaddr);
+    } else if (msg->msgType == RLPRREP) {
+        cout << "RLPRREP" << endl;
+        handleReplacePeerRep((Member *) env, emulNet, (RlPrRepCnt *) (msg + 1));
+    } else if (msg->msgType == MKPRREQ) {
+        cout << "MKPRREQ" << endl;
+        handleMakePeerReq((Member *) env, emulNet, (MkPrReqCnt *) (msg + 1), msg->fromaddr);
+    } else if (msg->msgType == MKPRREP) {
+        cout << "MKPRREP" << endl;
+        handleMakePeerRep((Member *) env, (MkPrRepCnt *) (msg + 1));
     } else if (msg->msgType == GOSSIP) {
+        cout << "GOSSIP" << endl;
         GossipCnt *gossip = (GossipCnt *) (msg + 1);
         int nodeNum = gossip->nodeNum;
     }
-
+    free(msg);
 }
 
 /**
@@ -332,8 +540,8 @@ void MP1Node::nodeLoopOps() {
 	/*
 	 * Your code goes here
 	 */
-    cout << "member in group: "<< memberNode->inGroup << ", address is " << memberNode->addr.getAddress() << 
-    " size of member: " << memberNode->memberList.size() << endl;
+    // cout << "member in group: "<< memberNode->inGroup << ", address is " << memberNode->addr.getAddress() << 
+    // " size of member: " << memberNode->memberList.size() << endl;
     std::vector<MemberListEntry> memberList = memberNode->memberList;
     for (std::vector<MemberListEntry>::iterator it = memberList.begin() ; it != memberList.end(); ++it) {
         MemberListEntry m = *it;
@@ -381,8 +589,18 @@ void MP1Node::initMemberListTable(Member *memberNode) {
  *
  * DESCRIPTION: Print the Address
  */
-void MP1Node::printAddress(Address *addr)
+void printNodeStatus(Member* memberNode, int id, int port, string info)
 {
-    printf("%d.%d.%d.%d:%d \n",  addr->addr[0],addr->addr[1],addr->addr[2],
-                                                       addr->addr[3], *(short*)&addr->addr[4]) ;    
+    Address *addr = toAddress(id, port);
+    bool sameNode = memcmp(memberNode->addr.addr, addr->addr, 6) == 0;
+    // cout << "trace node, " << memberNode->addr.getAddress() << " " << addr->getAddress() << " " << endl; 
+    if (sameNode) {
+        cout << "Track the node: " << addr->getAddress() << " " << info;
+        cout << "neighbor are";
+        for (int i = 0; i < memberNode->memberList.size(); i++) {
+            cout << ", " << memberNode->memberList[i].id;
+        }
+        cout << endl;
+    }
+    delete addr;
 }

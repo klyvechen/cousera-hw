@@ -31,6 +31,17 @@ int main(int argc, char *argv[]) {
 		return FAILURE;
 	}
 
+    cout << " sizeof(PeerInfo) is " << sizeof(PeerInfo) << 
+     ", sizeof(GossipCnt) is " << sizeof(GossipCnt) <<   
+     ", sizeof(JoinReqCnt) is " << sizeof(JoinReqCnt) <<    
+     ", sizeof(JoinRepCnt) is " << sizeof(JoinRepCnt) <<    
+     ", sizeof(MkPrReqCnt) is " << sizeof(MkPrReqCnt) <<    
+     ", sizeof(MkPrRepCnt) is " << sizeof(MkPrRepCnt) <<    
+     ", sizeof(RlPrReqCnt) is " << sizeof(RlPrReqCnt) <<    
+     ", sizeof(RlPrRepCnt) is " << sizeof(RlPrRepCnt) <<    
+     ", sizeof(MessageHdr) is " << sizeof(MessageHdr) <<    
+     ", sizeof(MsgTypes) is " << sizeof(MsgTypes) << endl;
+
 	// Create a new application object
 	Application *app = new Application(argv[1]);
 	// Call the run function
